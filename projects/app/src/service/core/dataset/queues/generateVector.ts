@@ -5,8 +5,6 @@ import { pushGenerateVectorUsage } from '@/service/support/wallet/usage/push';
 import { checkTeamAiPointsAndLock } from './utils';
 import { addMinutes } from 'date-fns';
 import { getLogger, LogCategories } from '@fastgpt/service/common/logger';
-import { MongoDatasetData } from '@fastgpt/service/core/dataset/data/schema';
-import { MongoDatasetCollection } from '@fastgpt/service/core/dataset/collection/schema';
 import { getDatasetEmbeddingModel, getDatasetVlmModel } from '@fastgpt/service/core/dataset/model';
 import { mongoSessionRun } from '@fastgpt/service/common/mongo/sessionRun';
 import { getErrText } from '@fastgpt/global/common/error/utils';
@@ -19,11 +17,9 @@ import type {
 import { delay, retryFn } from '@fastgpt/global/common/system/utils';
 import { DatasetDataIndexTypeEnum } from '@fastgpt/global/core/dataset/data/constants';
 import { isDatasetDataSystemIndexType } from '@fastgpt/global/core/dataset/data/utils';
-import {
-  getDatasetImageIndexCapability,
-  getDatasetImageTrainingMode
-} from '@fastgpt/service/core/dataset/utils';
-import { uniqueDatasetDataMarkdownImageUrls } from '@fastgpt/service/core/dataset/data/utils';
+import { getDatasetImageIndexCapability } from '@fastgpt/service/core/dataset/utils';
+import { enqueueNextDatasetRebuildTask } from './rebuild';
+import { isDatasetSynonymEnabled } from '@fastgpt/service/core/dataset/synonym/entity';
 
 const logger = getLogger(LogCategories.MODULE.DATASET.EMBEDDING);
 
@@ -76,6 +72,21 @@ export const getRebuildBaseIndexes = (trainingData: TrainingDataType) => {
   });
 };
 
+/**
+ * 获取完整 rebuild 最终写入的数据，优先使用本轮图片和自动索引训练产物。
+ */
+export const getRebuildUpdateInput = (trainingData: TrainingDataType) => {
+  if (!trainingData.data) return;
+
+  return {
+    q: trainingData.q ? trainingData.q : trainingData.data.q,
+    a: trainingData.a ?? trainingData.data.a,
+    imageId: trainingData.data.imageId,
+    indexes: getRebuildBaseIndexes(trainingData),
+    imageDescMap: trainingData.imageDescMap
+  };
+};
+
 /* 索引生成队列。每导入一次，就是一个单独的线程 */
 export async function generateVector(): Promise<any> {
   const max = global.systemEnv?.vectorMaxProcess || 10;
@@ -99,7 +110,10 @@ export async function generateVector(): Promise<any> {
             {
               mode: TrainingModeEnum.chunk,
               retryCount: { $gt: 0 },
-              lockTime: { $lte: addMinutes(new Date(), -3) }
+              lockTime: { $lte: addMinutes(new Date(), -3) },
+              ...(!isDatasetSynonymEnabled() && {
+                synonymVersion: { $exists: false }
+              })
             },
             {
               lockTime: new Date(),
@@ -154,7 +168,9 @@ export async function generateVector(): Promise<any> {
           collectionId: data.collectionId,
           trainingId: data._id
         });
-        // Delete data
+        if (data.synonymVersion && data.dataset && data.dataId) {
+          await enqueueFollowingDatasetRebuild({ trainingData: data });
+        }
         await MongoDatasetTraining.deleteOne({ _id: data._id });
         continue;
       }
@@ -227,100 +243,49 @@ export async function generateVector(): Promise<any> {
   logger.debug('Vector queue loop exit', { queueSize: global.vectorQueueLen });
 }
 
+/**
+ * 在处理当前 rebuild 前先补充下一条任务。
+ * 重试耗尽后必须向上抛错，让当前 training 保持可重试，避免链路在仍有 rebuilding data 时中断。
+ */
+const enqueueFollowingDatasetRebuild = async ({
+  trainingData
+}: {
+  trainingData: TrainingDataType;
+}) =>
+  retryFn(() =>
+    enqueueNextDatasetRebuildTask({
+      teamId: String(trainingData.teamId),
+      tmbId: String(trainingData.tmbId),
+      datasetId: String(trainingData.datasetId),
+      billId: trainingData.billId,
+      vectorModel: getDatasetEmbeddingModel(trainingData.dataset),
+      vlmModel: getDatasetVlmModel(trainingData.dataset),
+      synonymVersion: trainingData.synonymVersion
+    })
+  );
+
 const rebuildData = async ({ trainingData }: { trainingData: TrainingDataType }) => {
+  // 同义词重建需要可靠续接；普通模型重建保持原有的尽力续接语义。
+  if (trainingData.synonymVersion) {
+    await enqueueFollowingDatasetRebuild({ trainingData });
+  } else {
+    await enqueueFollowingDatasetRebuild({ trainingData }).catch(() => {});
+  }
+
   if (!trainingData.data) {
     await MongoDatasetTraining.deleteOne({ _id: trainingData._id });
+    if (trainingData.synonymVersion) return { tokens: 0 };
     return Promise.reject('Not data');
   }
   const datasetData = trainingData.data;
 
-  // 批量重建时先挂下一条任务，避免当前任务耗时太长导致后续数据迟迟不入队。
-  try {
-    await retryFn(() =>
-      mongoSessionRun(async (session) => {
-        const newRebuildingData = await MongoDatasetData.findOneAndUpdate(
-          {
-            rebuilding: true,
-            teamId: trainingData.teamId,
-            datasetId: trainingData.datasetId
-          },
-          {
-            $unset: {
-              rebuilding: null
-            },
-            updateTime: new Date()
-          },
-          { session }
-        ).select({
-          _id: 1,
-          collectionId: 1,
-          q: 1,
-          imageId: 1,
-          indexes: 1
-        });
-
-        if (newRebuildingData) {
-          const collection = await MongoDatasetCollection.findById(newRebuildingData.collectionId)
-            .select('imageIndex')
-            .session(session);
-          const hasMarkdownImages =
-            !!collection?.imageIndex &&
-            uniqueDatasetDataMarkdownImageUrls([newRebuildingData.q]).length > 0;
-          const { availableVlmModel, supportVlm, supportImageIndex } =
-            getDatasetImageIndexCapability({
-              vectorModel: getDatasetEmbeddingModel(trainingData.dataset),
-              vlmModel: getDatasetVlmModel(trainingData.dataset)
-            });
-          const mode = getDatasetImageTrainingMode({
-            supportVlm,
-            supportImageIndex,
-            imageId: newRebuildingData.imageId,
-            hasMarkdownImages
-          });
-
-          await MongoDatasetTraining.create(
-            [
-              {
-                teamId: trainingData.teamId,
-                tmbId: trainingData.tmbId,
-                datasetId: trainingData.datasetId,
-                collectionId: newRebuildingData.collectionId,
-                billId: trainingData.billId,
-                mode,
-                model:
-                  (mode === TrainingModeEnum.imageParse || mode === TrainingModeEnum.image) &&
-                  supportVlm &&
-                  availableVlmModel
-                    ? availableVlmModel.model
-                    : getDatasetEmbeddingModel(trainingData.dataset).model,
-                dataId: newRebuildingData._id,
-                ...(newRebuildingData.imageId && { imageId: newRebuildingData.imageId }),
-                ...(mode === TrainingModeEnum.image && {
-                  q: newRebuildingData.q,
-                  indexes: newRebuildingData.indexes
-                }),
-                retryCount: 50
-              }
-            ],
-            { session, ordered: true }
-          );
-        }
-      })
-    );
-  } catch {}
-
   const embModel = getDatasetEmbeddingModel(trainingData.dataset);
-  const q = trainingData.q || datasetData.q;
-  const a = trainingData.a ?? datasetData.a;
-  const rebuildIndexes = getRebuildBaseIndexes(trainingData);
+  const rebuildUpdateInput = getRebuildUpdateInput(trainingData);
 
   const { tokens } = await updateDatasetDataByIndexes({
     dataId: String(datasetData._id),
-    q,
-    a,
-    imageId: datasetData.imageId,
+    ...rebuildUpdateInput,
     imageIndex: !!trainingData.collection.imageIndex,
-    indexes: rebuildIndexes,
     model: embModel,
     indexSize: trainingData.indexSize || getMaxIndexSize(embModel),
     indexPrefix: trainingData.collection.indexPrefixTitle
@@ -330,13 +295,6 @@ const rebuildData = async ({ trainingData }: { trainingData: TrainingDataType })
   });
 
   await mongoSessionRun(async (session) => {
-    if (trainingData.imageDescMap) {
-      await MongoDatasetData.updateOne(
-        { _id: datasetData._id },
-        { $set: { imageDescMap: trainingData.imageDescMap } },
-        { session }
-      );
-    }
     await MongoDatasetTraining.deleteOne({ _id: trainingData._id }, { session });
   });
 
