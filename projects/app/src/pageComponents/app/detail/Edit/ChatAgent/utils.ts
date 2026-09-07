@@ -157,10 +157,11 @@ export function agentForm2AppWorkflow(
   const aiChatNodeId = '7BdojPlukIQw';
   const normalizedSandboxEntrypoint = data.aiSettings.sandboxEntrypoint?.trim() || undefined;
   const modelMultimodal = {
-    vision: !!data.aiSettings.aiChatVision,
-    audio: !!data.aiSettings.aiChatAudio,
-    video: !!data.aiSettings.aiChatVideo,
-    extractFiles: !!data.aiSettings.aiChatExtractFiles
+    // 表单只控制文件上传；媒体传递和链接提取统一放行，实际能力由运行时模型配置判断。
+    vision: true,
+    audio: true,
+    video: true,
+    extractFiles: true
   };
   const modelReferenceInputs: FlowNodeInputItemType[] = [
     ...(data.aiSettings.modelId !== undefined || !data.aiSettings.model

@@ -1,7 +1,11 @@
 import { getDefaultAppForm } from '@fastgpt/global/core/app/utils';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import { agentForm2AppWorkflow } from '@/pageComponents/app/detail/Edit/ChatAgent/utils';
+import {
+  agentForm2AppWorkflow,
+  appWorkflow2AgentForm
+} from '@/pageComponents/app/detail/Edit/ChatAgent/utils';
 import { describe, expect, it } from 'vitest';
+import type { AppTTSConfigType } from '@fastgpt/global/core/app/type';
 
 const getModelInputs = ({ modelId, model }: { modelId?: string; model?: string }) => {
   const form = getDefaultAppForm();
@@ -16,7 +20,59 @@ const getModelInputs = ({ modelId, model }: { modelId?: string; model?: string }
     );
 };
 
+describe('agentForm2AppWorkflow TTS configuration', () => {
+  it.each<AppTTSConfigType>([
+    { type: 'none' },
+    { type: 'web', speed: 1.2 },
+    { type: 'model', modelId: 'tts-model', voice: 'alloy', speed: 0.8 }
+  ])('preserves TTS settings through workflow save and form restore: %j', (ttsConfig) => {
+    const form = getDefaultAppForm();
+    form.chatConfig.ttsConfig = ttsConfig;
+    form.chatConfig.welcomeText = 'Welcome';
+    form.chatConfig.whisperConfig = { open: true, autoSend: false, autoTTSResponse: true };
+
+    const workflow = agentForm2AppWorkflow(form, (key: string) => key);
+    const restoredForm = appWorkflow2AgentForm(workflow);
+    const restoredWorkflow = agentForm2AppWorkflow(restoredForm, (key: string) => key);
+
+    for (const result of [workflow, restoredWorkflow]) {
+      expect(result.chatConfig.ttsConfig).toEqual(ttsConfig);
+      expect(result.chatConfig.whisperConfig).toEqual(form.chatConfig.whisperConfig);
+      expect(result.chatConfig.welcomeText).toBe('Welcome');
+    }
+  });
+});
+
 describe('agentForm2AppWorkflow model reference', () => {
+  it.each([undefined, false, true])('allows images independently of legacy vision=%s', (vision) => {
+    const form = getDefaultAppForm();
+    form.aiSettings.aiChatVision = vision;
+    form.aiSettings.aiChatAudio = vision;
+    form.aiSettings.aiChatVideo = vision;
+    form.aiSettings.aiChatExtractFiles = vision;
+
+    const workflow = agentForm2AppWorkflow(form, (key: string) => key);
+    const restoredForm = appWorkflow2AgentForm(workflow);
+    const restoredWorkflow = agentForm2AppWorkflow(restoredForm, (key: string) => key);
+
+    for (const result of [workflow, restoredWorkflow]) {
+      const inputs = result.nodes.flatMap((node) => node.inputs);
+      for (const key of [
+        NodeInputKeyEnum.aiChatVision,
+        NodeInputKeyEnum.aiChatAudio,
+        NodeInputKeyEnum.aiChatVideo,
+        NodeInputKeyEnum.aiChatExtractFiles
+      ]) {
+        expect(inputs.filter((input) => input.key === key)).toEqual([
+          expect.objectContaining({ value: true })
+        ]);
+      }
+      expect(inputs.find((input) => input.key === NodeInputKeyEnum.fileUrlList)?.value).toEqual(
+        expect.arrayContaining([expect.any(Array)])
+      );
+    }
+  });
+
   it('preserves an empty modelId instead of falling back to legacy model', () => {
     expect(getModelInputs({ modelId: '', model: 'legacy-model' })).toEqual(
       expect.arrayContaining([
