@@ -3,7 +3,7 @@ import type {
   FlowNodeTemplateType,
   NodeTemplateListItemType
 } from '@fastgpt/global/core/workflow/type/node';
-import { getAppDetailById, getMyApps } from '../api';
+import { getMyApps } from '../api';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { FlowNodeTemplateTypeEnum } from '@fastgpt/global/core/workflow/constants';
 import { AppTypeEnum } from '@fastgpt/global/core/app/constants';
@@ -11,52 +11,48 @@ import type {
   ParentIdType,
   ParentTreePathItemType
 } from '@fastgpt/global/common/parentFolder/type';
-import { AppToolSourceEnum } from '@fastgpt/global/core/app/tool/constants';
-import { getMcpChildren } from './mcpTools';
 import type {
   GetPreviewNodeQuery,
+  GetToolSetChildrenResponseType,
   GetSystemToolTemplatesBodyType,
   GetToolPathQueryType
 } from '@fastgpt/global/openapi/core/app/tool/api';
 
 /* ============ team plugin ============== */
+/** parentType 来自已加载的列表项；普通目录和 Agent 查询直接走 list，不额外探测父资源。 */
 export const getTeamAppTemplates = async (data?: {
   parentId?: ParentIdType;
+  parentType?: AppTypeEnum;
   searchKey?: string;
   type?: AppTypeEnum[];
 }) => {
-  if (data?.parentId) {
-    // handle get mcptools
-    const app = await getAppDetailById(data.parentId);
-    if (app.type === AppTypeEnum.mcpToolSet) {
-      const children = await getMcpChildren({ id: data.parentId, searchKey: data.searchKey });
-      return children.map((item) => ({
+  const { parentType, ...listQuery } = data ?? {};
+  // 列表项已经提供 appType；普通目录和 Agent 不再请求接口探测父资源类型。
+  if (
+    data?.parentId &&
+    (parentType === AppTypeEnum.mcpToolSet || parentType === AppTypeEnum.httpToolSet) &&
+    (!data.type || data.type.includes(parentType))
+  ) {
+    const { type, tools } = await GET<GetToolSetChildrenResponseType>(
+      '/core/app/tool/getToolSetChildren',
+      {
+        appId: data.parentId,
+        searchKey: data.searchKey
+      }
+    );
+    if (type === AppTypeEnum.mcpToolSet || type === AppTypeEnum.httpToolSet) {
+      return tools.map((item) => ({
         ...item,
         intro: item.description || '',
         flowNodeType: FlowNodeTypeEnum.tool,
         templateType: FlowNodeTemplateTypeEnum.teamApp,
-        appType: app.type,
-        isTool: true,
-        isFolder: false
-      }));
-      // handle http toolset
-    } else if (app.type === AppTypeEnum.httpToolSet) {
-      const toolList = app.modules[0]?.toolConfig?.httpToolSet?.toolList;
-      if (!toolList) return [];
-      return toolList.map((item) => ({
-        id: `${AppToolSourceEnum.http}-${app._id}/${item.name}`,
-        avatar: app.avatar,
-        name: item.name,
-        intro: item.description || '',
-        flowNodeType: FlowNodeTypeEnum.tool,
-        templateType: FlowNodeTemplateTypeEnum.teamApp,
-        appType: app.type,
+        appType: type,
         isTool: true,
         isFolder: false
       }));
     }
   }
-  return getMyApps(data).then((res) =>
+  return getMyApps(data ? listQuery : undefined).then((res) =>
     res.map((app) => ({
       tmbId: app.tmbId,
       id: app._id,
