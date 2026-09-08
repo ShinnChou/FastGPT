@@ -1,5 +1,6 @@
-import { ModelScopeEnum } from '@fastgpt/global/core/ai/constants';
+import { ModelScopeEnum, ModelTypeEnum } from '@fastgpt/global/core/ai/constants';
 import type { SystemModelDocumentDataType } from '@fastgpt/global/core/ai/model.schema';
+import { isEmptyModelValue } from '@fastgpt/global/core/ai/modelReference';
 import { MongoAIModel } from '@fastgpt/service/core/ai/config/schema';
 import { findSystemDefaultModelIds } from '@fastgpt/service/core/ai/defaultModel/entity';
 import type { ModelRequirement } from './types';
@@ -38,6 +39,40 @@ export const loadModelCatalog = async () => {
     (!requirement.vision || ('vision' in model.config && model.config.vision === true));
 
   return {
+    /**
+     * 知识库理解模型依次检查有效 ID、精确旧名称；图片理解要求视觉能力。
+     * 文本理解未配置旧名称也补默认，图片理解旧名称为空则不补默认，但仍优先保留有效 ID。
+     * 已配置默认模型不检查启用状态；仅未配置默认时按 _id 升序选择首个启用的兼容模型。
+     * 原模型仅停用时保留原选择；无法解析配置的默认模型或没有兼容候选时不生成 ID。
+     */
+    resolveDatasetUnderstandingModelId: ({
+      legacyModel,
+      modelId,
+      vision
+    }: {
+      legacyModel: unknown;
+      modelId: unknown;
+      vision: boolean;
+    }): string | undefined => {
+      const requirement = { type: ModelTypeEnum.llm, vision };
+      const current = modelById.get(String(modelId ?? ''));
+      if (current && matchesRequirement(current, requirement)) return String(current._id);
+      // 图片模型未配置时不新增图片理解配置；文本模型即使未配置也需要默认回填。
+      if (vision && isEmptyModelValue(legacyModel)) return;
+      const named = typeof legacyModel === 'string' ? modelByName.get(legacyModel) : undefined;
+      if (named && matchesRequirement(named, requirement)) return String(named._id);
+      const defaultId = defaultModelIds[vision ? 'datasetImageLLM' : 'datasetTextLLM'];
+      if (!isEmptyModelValue(defaultId)) {
+        const defaultModel = modelById.get(String(defaultId));
+        return defaultModel && matchesRequirement(defaultModel, requirement)
+          ? String(defaultModel._id)
+          : undefined;
+      }
+      const fallback = models.find(
+        (model) => model.isActive && matchesRequirement(model, requirement)
+      );
+      return fallback ? String(fallback._id) : undefined;
+    },
     // 权限清理必须先证明目录可用，不能把空目录中的全部 ACL 判断为悬空权限。
     assertAvailable,
     resolveModelIdByName: (modelName: string | undefined): string | undefined => {

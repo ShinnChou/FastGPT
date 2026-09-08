@@ -1,20 +1,36 @@
-import type { StoreNodeItemType, FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
-import type { FlowNodeTemplateType } from '@fastgpt/global/core/workflow/type/node';
-import type { Edge, Node, XYPosition } from 'reactflow';
-import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
+import type { WorkflowDataContextType } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowInitContext';
+import { getNanoid } from '@fastgpt/global/common/string/tools';
+import { isEmptyModelValue } from '@fastgpt/global/core/ai/modelReference';
+import { normalizeFlowNodeInputType } from '@fastgpt/global/core/app/formEdit/utils';
+import { type AppChatConfigType } from '@fastgpt/global/core/app/type';
+import {
+  NodeInputKeyEnum,
+  NodeOutputKeyEnum,
+  VARIABLE_NODE_ID,
+  WorkflowIOValueTypeEnum
+} from '@fastgpt/global/core/workflow/constants';
 import {
   EDGE_TYPE,
   FlowNodeInputTypeEnum,
   FlowNodeOutputTypeEnum,
   FlowNodeTypeEnum
 } from '@fastgpt/global/core/workflow/node/constant';
+import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
 import { EmptyNode } from '@fastgpt/global/core/workflow/template/system/emptyNode';
+import { type IfElseListItemType } from '@fastgpt/global/core/workflow/template/system/ifElse/type';
+import { initNewIfElseList } from '@fastgpt/global/core/workflow/template/system/ifElse/utils';
 import { type StoreEdgeItemType } from '@fastgpt/global/core/workflow/type/edge';
-import { getNanoid } from '@fastgpt/global/common/string/tools';
-import { getGlobalVariableNode } from './adapt';
-import { VARIABLE_NODE_ID, WorkflowIOValueTypeEnum } from '@fastgpt/global/core/workflow/constants';
-import { NodeInputKeyEnum, NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import { type EditorVariablePickerType } from '@fastgpt/web/components/common/Textarea/PromptEditor/type';
+import {
+  type FlowNodeInputItemType,
+  type FlowNodeOutputItemType,
+  type ReferenceItemValueType,
+  type ReferenceValueType
+} from '@fastgpt/global/core/workflow/type/io';
+import type {
+  FlowNodeItemType,
+  FlowNodeTemplateType,
+  StoreNodeItemType
+} from '@fastgpt/global/core/workflow/type/node';
 import {
   formatEditorVariablePickerIcon,
   getAppChatConfig,
@@ -23,21 +39,12 @@ import {
   nodeInputIsReference,
   workflowModelKeyMappings
 } from '@fastgpt/global/core/workflow/utils';
-import { type TFunction } from 'next-i18next';
-import {
-  type FlowNodeInputItemType,
-  type FlowNodeOutputItemType,
-  type ReferenceItemValueType,
-  type ReferenceValueType
-} from '@fastgpt/global/core/workflow/type/io';
-import { type IfElseListItemType } from '@fastgpt/global/core/workflow/template/system/ifElse/type';
-import { initNewIfElseList } from '@fastgpt/global/core/workflow/template/system/ifElse/utils';
-import { type AppChatConfigType } from '@fastgpt/global/core/app/type';
+import { type EditorVariablePickerType } from '@fastgpt/web/components/common/Textarea/PromptEditor/type';
 import { cloneDeep, isEqual } from 'lodash-es';
+import { type TFunction } from 'next-i18next';
+import type { Edge, Node, XYPosition } from 'reactflow';
 import { workflowSystemVariables } from '../app/utils';
-import type { WorkflowDataContextType } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowInitContext';
-import type { MyLLMModelItemType } from '@fastgpt/global/openapi/core/ai/model/api';
-import { normalizeFlowNodeInputType } from '@fastgpt/global/core/app/formEdit/utils';
+import { getGlobalVariableNode } from './adapt';
 
 /**
  * 将节点模板转换为画布节点，并按创建时语言初始化可编辑文本。
@@ -50,7 +57,8 @@ export const nodeTemplate2FlowNode = ({
   parentNodeId,
   zIndex,
   t,
-  formatName
+  formatName,
+  initialModelId
 }: {
   template: FlowNodeTemplateType;
   position: XYPosition;
@@ -59,6 +67,8 @@ export const nodeTemplate2FlowNode = ({
   zIndex?: number;
   t: TFunction;
   formatName?: (name: string) => string;
+  /** 新建业务显式解析后的默认 ID；恢复和复制不传。 */
+  initialModelId?: string;
 }): Node<FlowNodeItemType> => {
   const name = t(template.name as any);
 
@@ -70,6 +80,20 @@ export const nodeTemplate2FlowNode = ({
     nodeId: getNanoid(),
     parentNodeId
   };
+  // 仅创建时初始化主模型；已有值和引用模式原样保留，不读写“上次选择”的持久化记录。
+  // 知识库搜索的辅助模型由参数弹窗负责，不在这里预填。
+  moduleItem.inputs = moduleItem.inputs.map((input) => {
+    const renderType = getSelectedInputRenderType(input);
+    if (
+      moduleItem.flowNodeType === FlowNodeTypeEnum.datasetSearchNode ||
+      !initialModelId ||
+      !isEmptyModelValue(input.value) ||
+      (renderType !== FlowNodeInputTypeEnum.selectLLMModel &&
+        renderType !== FlowNodeInputTypeEnum.settingLLMModel)
+    )
+      return input;
+    return { ...input, value: initialModelId };
+  });
   if (moduleItem.flowNodeType === FlowNodeTypeEnum.ifElseNode) {
     moduleItem.inputs = moduleItem.inputs.map((input) => {
       if (input.key !== NodeInputKeyEnum.ifElseList) return input;
@@ -97,7 +121,6 @@ type StoreNode2FlowNodeProps = {
   zIndex?: number;
   parentNodeId?: string;
   isTool?: boolean;
-  llmModelList?: MyLLMModelItemType[];
   t: TFunction;
 };
 
@@ -115,7 +138,6 @@ export const storeNode2FlowNode = ({
   zIndex,
   parentNodeId,
   isTool = false,
-  llmModelList = [],
   t
 }: StoreNode2FlowNodeProps): Node<FlowNodeItemType> => {
   // init some static data
@@ -294,20 +316,7 @@ export const storeNode2FlowNode = ({
         })
       : nodeItem.inputs.map((input) => normalizeFlowNodeInputType(input, { isTool }));
 
-  // Format output invalid
-  const llmModelMap = llmModelList.reduce(
-    (acc, model) => {
-      acc[model.model] = model;
-      if (model.modelId) acc[model.modelId] = model;
-      return acc;
-    },
-    {} as Record<string, MyLLMModelItemType>
-  );
-  nodeItem.outputs.forEach((output) => {
-    if (output.invalidCondition) {
-      output.invalid = output.invalidCondition({ inputs: nodeItem.inputs, llmModelMap });
-    }
-  });
+  // 输出能力由始终挂载的节点逻辑就近读取模型后计算，折叠不影响能力同步。
 
   return {
     id: storeNode.nodeId,

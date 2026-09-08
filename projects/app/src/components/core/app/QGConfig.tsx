@@ -1,22 +1,25 @@
-import MyIcon from '@fastgpt/web/components/common/Icon';
-import { Box, Button, Flex, useDisclosure, Switch, type BoxProps } from '@chakra-ui/react';
-
 import React from 'react';
-import { useTranslation } from 'next-i18next';
-import type { AppQGConfigType } from '@fastgpt/global/core/app/type';
-import MyModal from '@fastgpt/web/components/v2/common/MyModal';
-import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
-import { defaultQGConfig } from '@fastgpt/global/core/app/constants';
-import ChatFunctionTip from './Tip';
-import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
-import AppConfigItem, { AppConfigItemAction } from './AppConfigItem';
+import { Box, Button, Flex, Switch, useDisclosure, type BoxProps } from '@chakra-ui/react';
+import MyIcon from '@fastgpt/web/components/common/Icon';
+
 import AIModelSelector from '@/components/Select/AIModelSelector';
-import CustomPromptEditor from '@fastgpt/web/components/common/Textarea/CustomPromptEditor';
+import { getModelDefault } from '@/web/core/ai/model/modelData';
+import { ModelTypeEnum } from '@fastgpt/global/core/ai/constants';
+import { isEmptyModelValue } from '@fastgpt/global/core/ai/modelReference';
 import {
   QuestionGuideFooterPrompt,
   QuestionGuidePrompt
 } from '@fastgpt/global/core/ai/prompt/agent';
-import { ModelTypeEnum } from '@fastgpt/global/core/ai/constants';
+import { defaultQGConfig } from '@fastgpt/global/core/app/constants';
+import type { AppQGConfigType } from '@fastgpt/global/core/app/type';
+import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
+import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
+import CustomPromptEditor from '@fastgpt/web/components/common/Textarea/CustomPromptEditor';
+import MyModal from '@fastgpt/web/components/v2/common/MyModal';
+import { useTranslation } from 'next-i18next';
+import { useEffect, useRef } from 'react';
+import AppConfigItem, { AppConfigItemAction } from './AppConfigItem';
+import ChatFunctionTip from './Tip';
 
 // question generator config
 const QGConfig = ({
@@ -75,6 +78,10 @@ const QGConfigModal = ({
   const customPrompt = value.customPrompt;
   const isOpenQG = value.open;
   const modelId = value.modelId ?? value.model;
+  const currentValue = useRef(value);
+  useEffect(() => {
+    currentValue.current = value;
+  }, [value]);
 
   const {
     isOpen: isOpenCustomPrompt,
@@ -96,11 +103,16 @@ const QGConfigModal = ({
           <FormLabel flex={'0 0 100px'}>{t('app:core.app.QG.Switch')}</FormLabel>
           <Switch
             isChecked={isOpenQG}
-            onChange={(e) => {
-              onChange({
-                ...value,
-                open: e.target.checked
-              });
+            onChange={async (e) => {
+              const enabled = e.target.checked;
+              currentValue.current = { ...value, open: enabled };
+              onChange(currentValue.current);
+              if (!enabled || isOpenQG || !isEmptyModelValue(modelId)) return;
+              const model = await getModelDefault({ modelType: ModelTypeEnum.llm });
+              const latest = currentValue.current;
+              if (model && latest.open && isEmptyModelValue(latest.modelId ?? latest.model)) {
+                onChange({ ...latest, modelId: model.modelId, model: undefined });
+              }
             }}
           />
         </Flex>
@@ -113,7 +125,6 @@ const QGConfigModal = ({
               <Box flex={'1 0 0'}>
                 <AIModelSelector
                   modelType={ModelTypeEnum.llm}
-                  autoSelectDefault
                   width={'100%'}
                   value={modelId}
                   onChange={(modelId) => {

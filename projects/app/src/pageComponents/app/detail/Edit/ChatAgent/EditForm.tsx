@@ -1,55 +1,55 @@
-import React, { useCallback, useEffect, useMemo } from 'react';
+import { getModelQuoteTokenLimit } from '@/web/core/ai/model/selection';
 import {
   Box,
+  Button,
   Flex,
   Grid,
-  type BoxProps,
-  useDisclosure,
-  Button,
   HStack,
-  Switch
+  Switch,
+  useDisclosure,
+  type BoxProps
 } from '@chakra-ui/react';
+import { ModelTypeEnum } from '@fastgpt/global/core/ai/constants';
 import type { AppFormEditFormType } from '@fastgpt/global/core/app/formEdit/type';
 import { useTranslation } from 'next-i18next';
+import React, { useCallback, useMemo } from 'react';
 
-import dynamic from 'next/dynamic';
+import SettingLLMModel from '@/components/core/ai/SettingLLMModel';
+import DatasetCard from '@/components/core/app/DatasetCard';
+import { useWelcomeTextFoldState } from '@/components/core/app/useAppEditorUIState';
+import SearchParamsTip from '@/components/core/dataset/SearchParamsTip';
+import { RechargeModal } from '@/components/support/wallet/NotSufficientModal';
+import { AppContext } from '@/pageComponents/app/detail/context';
+import { useSystemStore } from '@/web/common/system/useSystemStore';
+import { useModelDetail } from '@/web/core/ai/model/useModelDetail';
+import { TTSTypeEnum } from '@/web/core/app/constants';
+import { useUserStore } from '@/web/support/user/useUserStore';
+import { SmallAddIcon } from '@chakra-ui/icons';
+import { AGENT_SANDBOX_TOOLSET_ID, SANDBOX_ICON } from '@fastgpt/global/core/ai/sandbox/tools';
+import { getToolIdentityKey } from '@fastgpt/global/core/app/tool/utils';
 import Avatar from '@fastgpt/web/components/common/Avatar';
 import MyIcon from '@fastgpt/web/components/common/Icon';
-import PromptEditor from '@fastgpt/web/components/common/Textarea/PromptEditor';
-import SearchParamsTip from '@/components/core/dataset/SearchParamsTip';
-import SettingLLMModel from '@/components/core/ai/SettingLLMModel';
-import { TTSTypeEnum } from '@/web/core/app/constants';
-import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
-import { useUserModelLists } from '@/web/core/ai/model/useUserModelLists';
-import ToolSelect from '../FormComponent/ToolSelector/ToolSelect';
-import { getToolIdentityKey } from '@fastgpt/global/core/app/tool/utils';
-import { cardStyles } from '../../constants';
-import { SmallAddIcon } from '@chakra-ui/icons';
 import MyIconButton from '@fastgpt/web/components/common/Icon/button';
+import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
-import { useSkillManager } from './hooks/useSkillManager';
-import { AGENT_SANDBOX_TOOLSET_ID, SANDBOX_ICON } from '@fastgpt/global/core/ai/sandbox/tools';
 import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
-import SandboxConfigButton from '../../components/SandboxConfigButton';
-import { useSystemStore } from '@/web/common/system/useSystemStore';
-import { useUserStore } from '@/web/support/user/useUserStore';
 import MyTag from '@fastgpt/web/components/common/Tag/index';
-import { useAgentSkillSelect } from './hooks/useAgentSkillSelect';
-import { RechargeModal } from '@/components/support/wallet/NotSufficientModal';
-import DatasetCard from '@/components/core/app/DatasetCard';
+import PromptEditor from '@fastgpt/web/components/common/Textarea/PromptEditor';
+import dynamic from 'next/dynamic';
 import { useContextSelector } from 'use-context-selector';
-import { AppContext } from '@/pageComponents/app/detail/context';
-import { useWelcomeTextFoldState } from '@/components/core/app/useAppEditorUIState';
-import {
-  findClientModelByReference,
-  resolveClientModelReferenceId
-} from '@/web/core/ai/model/modelReference';
+import SandboxConfigButton from '../../components/SandboxConfigButton';
+import { cardStyles } from '../../constants';
+import ToolSelect from '../FormComponent/ToolSelector/ToolSelect';
+import { useInitializeQueryExtensionModel } from '../FormComponent/useInitializeQueryExtensionModel';
+import { useAgentSkillSelect } from './hooks/useAgentSkillSelect';
+import { useSkillManager } from './hooks/useSkillManager';
 
 const DatasetSelectModal = dynamic(() => import('@/components/core/app/DatasetSelectModal'));
 const DatasetParamsModal = dynamic(() => import('@/components/core/app/DatasetParamsModal'));
 const SkillSelectModal = dynamic(() => import('../FormComponent/ToolSelector/SkillSelectModal'));
 const WhisperConfig = dynamic(() => import('@/components/core/app/WhisperConfig'));
 const TTSSelect = dynamic(() => import('@/components/core/app/TTSSelect'));
+const QGConfig = dynamic(() => import('@/components/core/app/QGConfig'));
 const WelcomeTextConfig = dynamic(() => import('@/components/core/app/WelcomeTextConfig'));
 const WelcomeQuestionsConfig = dynamic(
   () => import('@/components/core/app/WelcomeQuestionsConfig')
@@ -166,57 +166,12 @@ const EditForm = ({
     onClose: onCloseDatasetParams
   } = useDisclosure();
 
-  const { llmModelList, reRankModelList } = useUserModelLists();
-
-  useEffect(() => {
-    setAppForm((state) => {
-      const modelId = resolveClientModelReferenceId({
-        models: llmModelList,
-        reference: state.aiSettings
-      });
-      const rerankModelId = resolveClientModelReferenceId({
-        models: reRankModelList,
-        reference: {
-          modelId: state.dataset.rerankModelId,
-          model: state.dataset.rerankModel
-        }
-      });
-      const datasetSearchExtensionModelId = resolveClientModelReferenceId({
-        models: llmModelList,
-        reference: {
-          modelId: state.dataset.datasetSearchExtensionModelId,
-          model: state.dataset.datasetSearchExtensionModel
-        }
-      });
-      if (
-        modelId === state.aiSettings.modelId &&
-        rerankModelId === state.dataset.rerankModelId &&
-        datasetSearchExtensionModelId === state.dataset.datasetSearchExtensionModelId
-      ) {
-        return state;
-      }
-      return {
-        ...state,
-        aiSettings: {
-          ...state.aiSettings,
-          modelId
-        },
-        dataset: {
-          ...state.dataset,
-          rerankModelId,
-          datasetSearchExtensionModelId
-        }
-      };
-    });
-  }, [llmModelList, reRankModelList, setAppForm]);
-  const selectedModel =
-    findClientModelByReference({
-      models: llmModelList,
-      reference: appForm.aiSettings
-    }) ??
-    (appForm.aiSettings.modelId === undefined && !appForm.aiSettings.model
-      ? llmModelList[0]
-      : undefined);
+  useInitializeQueryExtensionModel({ appId, appForm, setAppForm });
+  const { model: configuredModel } = useModelDetail({
+    ...appForm.aiSettings,
+    modelType: ModelTypeEnum.llm
+  });
+  const selectedModel = configuredModel;
   const promptSkillOption = useMemo(
     () => ({
       ...skillOption,
@@ -242,8 +197,8 @@ const EditForm = ({
     [appForm.aiSettings.useAgentSandbox, onChangeAgentSandbox, skillOption]
   );
   const tokenLimit = useMemo(() => {
-    return selectedModel?.config.quoteMaxToken ?? 3000;
-  }, [selectedModel?.config.quoteMaxToken]);
+    return getModelQuoteTokenLimit(configuredModel);
+  }, [configuredModel]);
 
   const updateWelcomeText = useCallback(
     (value: string) => {
@@ -717,7 +672,7 @@ const EditForm = ({
         </Box>
 
         {/* question guide */}
-        {/* <Box {...BoxStyles}>
+        <Box {...BoxStyles}>
           <QGConfig
             value={appForm.chatConfig.questionGuide}
             onChange={(e) => {
@@ -730,7 +685,7 @@ const EditForm = ({
               }));
             }}
           />
-        </Box> */}
+        </Box>
 
         {/* question tips */}
         {/* <Box {...BoxStyles}>

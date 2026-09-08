@@ -44,6 +44,22 @@ describe('agentForm2AppWorkflow TTS configuration', () => {
 });
 
 describe('agentForm2AppWorkflow model reference', () => {
+  it('defaults search enhancements off and preserves explicitly enabled saved settings', () => {
+    const empty = appWorkflow2AgentForm({ nodes: [], chatConfig: {} });
+    expect(empty.dataset).toMatchObject({
+      usingReRank: false,
+      datasetSearchUsingExtensionQuery: false
+    });
+    const form = getDefaultAppForm();
+    form.dataset.usingReRank = true;
+    form.dataset.datasetSearchUsingExtensionQuery = true;
+    const restored = appWorkflow2AgentForm(agentForm2AppWorkflow(form, (key: string) => key));
+    expect(restored.dataset).toMatchObject({
+      usingReRank: true,
+      datasetSearchUsingExtensionQuery: true
+    });
+  });
+
   it.each([undefined, false, true])('allows images independently of legacy vision=%s', (vision) => {
     const form = getDefaultAppForm();
     form.aiSettings.aiChatVision = vision;
@@ -113,5 +129,51 @@ describe('agentForm2AppWorkflow model reference', () => {
       datasetSearchExtensionModelId: '',
       datasetSearchExtensionModel: 'legacy-extension'
     });
+  });
+
+  it.each([false, true])(
+    'normalizes null dataset model references before saving when auxiliary search is enabled=%s',
+    (enabled) => {
+      const form = getDefaultAppForm();
+      // 模拟历史配置或本地快照中的 null；表单类型本身只允许 string/undefined。
+      Object.assign(form.dataset, {
+        usingReRank: enabled,
+        datasetSearchUsingExtensionQuery: enabled,
+        rerankModelId: null,
+        rerankModel: null,
+        datasetSearchExtensionModelId: null,
+        datasetSearchExtensionModel: null
+      });
+      form.chatConfig.questionGuide = { open: true, modelId: 'question-guide-model' };
+
+      const workflow = agentForm2AppWorkflow(form, (key: string) => key);
+      const restoredWorkflow = agentForm2AppWorkflow(
+        appWorkflow2AgentForm(workflow),
+        (key: string) => key
+      );
+
+      for (const result of [workflow, restoredWorkflow]) {
+        const datasetParams = result.nodes
+          .flatMap((node) => node.inputs)
+          .find((input) => input.key === NodeInputKeyEnum.datasetParams)?.value;
+
+        expect(datasetParams).toMatchObject({
+          usingReRank: enabled,
+          datasetSearchUsingExtensionQuery: enabled,
+          rerankModelId: undefined,
+          rerankModel: undefined,
+          datasetSearchExtensionModelId: undefined,
+          datasetSearchExtensionModel: undefined
+        });
+        expect(result.chatConfig.questionGuide).toEqual(form.chatConfig.questionGuide);
+      }
+    }
+  );
+
+  it('still rejects non-string dataset model references', () => {
+    const form = getDefaultAppForm();
+    Object.assign(form.dataset, { datasetSearchExtensionModelId: 123 });
+
+    expect(() => agentForm2AppWorkflow(form, (key: string) => key)).toThrow();
   });
 });
